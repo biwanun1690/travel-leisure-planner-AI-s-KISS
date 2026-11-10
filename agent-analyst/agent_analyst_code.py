@@ -48,7 +48,9 @@ if not api_key:
     api_key = getpass("Введите CLOUD_API_KEY: ").strip()
 
 if not api_key:
-    raise RuntimeError("Не указан API-ключ Cloud.ru Foundation Models.")
+    raise RuntimeError(
+        "Не указан API-ключ Cloud.ru Foundation Models."
+    )
 
 BASE_URL = "https://foundation-models.api.cloud.ru/v1"
 MODEL = "Qwen/Qwen3-Coder-Next"
@@ -83,6 +85,7 @@ class ConstraintType(str, Enum):
 
 
 class Hobby(BaseModel):
+
     name: str = Field(min_length=1, max_length=80)
 
     location_type: Literal[
@@ -98,6 +101,7 @@ class Hobby(BaseModel):
 
 
 class Constraint(BaseModel):
+
     text: str = Field(min_length=1, max_length=200)
 
     type: ConstraintType
@@ -133,10 +137,13 @@ class UserProfile(BaseModel):
     @field_validator("hobbies")
     @classmethod
     def no_duplicate_hobbies(cls, v):
+
         names = [h.name.lower().strip() for h in v]
 
         if len(set(names)) != len(names):
-            raise ValueError("Дублирующиеся хобби в профиле")
+            raise ValueError(
+                "Дублирующиеся хобби в профиле"
+            )
 
         return v
 
@@ -145,45 +152,141 @@ class UserProfile(BaseModel):
 # 5. СИСТЕМНЫЙ ПРОМПТ
 # ============================================================
 
-ANALYST_PROMPT = """
-Ты — Агент-Аналитик предпочтений в системе планирования путешествий.
+SYSTEM_PROMPT = """
+Ты — Агент-аналитик предпочтений и хобби
+в мультиагентной системе планирования путешествий.
 
-ЗАДАЧА: извлечь из текста клиента структурированный профиль.
+ТВОЯ ЗАДАЧА:
+Извлечь из текста пользователя структурированный профиль.
 
-ПРАВИЛА:
-1. Декомпозиция хобби по location_type:
-   - open_horizon: астрофотография, звёзды
-   - water: дайвинг, серфинг, снорклинг
-   - mountains: треккинг, скалолазание
-   - city_culture: музеи, архитектура, гастрономия
-   - forest: хайкинг, ягоды
-   - indoor: йога, SPA, кулинария
+Верни СТРОГО JSON без markdown и пояснений.
 
-2. Ограничения:
-   - HARD: аллергии, травмы, дети, визы
-   - SOFT: темп, эстетика, подъём
+ПРАВИЛА ДЕКОМПОЗИЦИИ ХОББИ:
 
-3. Если дети → has_children=true + constraint категории kids.
-4. Если аллергия → HARD constraint категории health.
-5. Если коляска → fitness=low + HARD constraint категории logistics.
+open_horizon — астрофотография, наблюдение звёзд.
+water — дайвинг, снорклинг, серфинг, плавание.
+mountains — скалолазание, треккинг.
+city_culture — музеи, архитектура, гастрономия.
+forest — хайкинг, сбор ягод.
+indoor — йога, кулинария, SPA, бассейн.
+
+Учитывай смысловые соответствия:
+бассейн и плавание — одно направление;
+SPA и спа — одно направление.
+
+Не создавай отдельные хобби для одного и того же занятия.
+
+ПРАВИЛА ОГРАНИЧЕНИЙ:
+
+HARD — обязательные ограничения:
+аллергии, травмы, дети, визы, физические ограничения.
+
+SOFT — предпочтения:
+темп, эстетика, время подъёма,
+отсутствие экстремальных активностей.
+
+ДОПУСТИМЫЕ КАТЕГОРИИ:
+
+health — здоровье, аллергии, травмы.
+safety — безопасность.
+kids — дети и условия для них.
+logistics — транспорт, мобильность, визы.
+comfort — комфорт, темп отдыха и предпочтения.
+
+ВАЖНО:
+Используй ТОЛЬКО перечисленные категории.
+Категорию pace запрещено использовать.
+Предпочтения по темпу отдыха относить к comfort.
+
+Если упомянуты дети:
+has_children=true.
+Добавь ограничение категории kids.
+
+Если упомянута аллергия:
+Добавь HARD-ограничение категории health.
+
+Если упомянута коляска или ограниченная мобильность:
+fitness="low".
+Добавь HARD-ограничение категории logistics.
+
+Каждое ограничение ОБЯЗАТЕЛЬНО должно быть объектом
+со следующими тремя полями:
+
+{
+  "text": "Описание ограничения",
+  "type": "hard",
+  "category": "logistics"
+}
+
+ЗАПРЕЩЕНО возвращать ограничения простыми строками.
 
 ФИЗИЧЕСКАЯ ФОРМА:
-- LOW: коляска, пожилые
-- MEDIUM: по умолчанию
-- HIGH: спорт, треккинг
 
-ПРИОРИТЕТЫ (1..10):
-- budget_priority: 1=не важен, 10=строгий
-- comfort_priority: 1=минимум, 10=максимум
+LOW — коляска, пожилые, отсутствие нагрузок.
+MEDIUM — по умолчанию.
+HIGH — спортивный поход, треккинг.
 
-БЮДЖЕТ: если указан — переведи в рубли. Если не указан — 100000.
-ДЛИТЕЛЬНОСТЬ: если указана — в днях. Если нет — 5.
-НАПРАВЛЕНИЕ: если упомянуто — в destination_hint.
-СПОСОБЫ ОПЛАТЫ: если упомянуты — в payment_methods.
+ВЕСА ПРИОРИТЕТОВ (1..10):
 
-ВЕСА ХОББИ: целые 1..10.
+budget_priority:
+1 — бюджет не важен.
+10 — строгий бюджет.
 
-НЕ ПРИДУМЫВАЙ хобби и ограничения, которых нет в тексте.
+comfort_priority:
+1 — минимальный комфорт.
+10 — высокий уровень комфорта.
+
+ЗНАЧЕНИЯ ПО УМОЛЧАНИЮ:
+
+group_size=2, если количество не указано.
+budget_priority=5, если приоритет не указан.
+comfort_priority=5, если приоритет не указан.
+fitness="medium", если форма не указана.
+has_children=false, если дети не упомянуты.
+constraints=[], если ограничений нет.
+
+ВЕСА ХОББИ:
+Целые числа от 1 до 10.
+
+ОБЯЗАТЕЛЬНЫЕ ПОЛЯ JSON:
+
+hobbies
+constraints
+fitness
+group_size
+has_children
+budget_priority
+comfort_priority
+raw_summary
+
+ФОРМАТ ОТВЕТА:
+
+{
+  "hobbies": [
+    {
+      "name": "музеи",
+      "location_type": "city_culture",
+      "priority_weight": 8
+    }
+  ],
+  "constraints": [
+    {
+      "text": "Передвижение на инвалидной коляске",
+      "type": "hard",
+      "category": "logistics"
+    }
+  ],
+  "fitness": "low",
+  "group_size": 2,
+  "has_children": false,
+  "budget_priority": 5,
+  "comfort_priority": 5,
+  "raw_summary": "Культурный тур с ограниченной мобильностью"
+}
+
+Не придумывай увлечения и ограничения.
+Все числовые поля возвращай числами.
+Возвращай только JSON.
 """
 
 
@@ -191,7 +294,7 @@ ANALYST_PROMPT = """
 # 6. ИЗВЛЕЧЕНИЕ JSON
 # ============================================================
 
-def extract_json_from_response(text: str) -> dict:
+def extract_json_from_response(text) -> dict:
 
     if isinstance(text, list):
         text = "".join(
@@ -200,9 +303,8 @@ def extract_json_from_response(text: str) -> dict:
             for block in text
         )
 
-    text = text.strip()
+    text = str(text).strip()
 
-    # Удаление markdown-обёртки
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
 
@@ -216,7 +318,9 @@ def extract_json_from_response(text: str) -> dict:
     try:
         data, _ = decoder.raw_decode(text[start:])
     except json.JSONDecodeError as e:
-        raise ValueError(f"Некорректный JSON: {e}") from e
+        raise ValueError(
+            f"Некорректный JSON: {e}"
+        ) from e
 
     if not isinstance(data, dict):
         raise ValueError("Ответ должен быть JSON-объектом")
@@ -225,12 +329,34 @@ def extract_json_from_response(text: str) -> dict:
 
 
 # ============================================================
-# 7. АГЕНТ-АНАЛИТИК
+# 7. НОРМАЛИЗАЦИЯ ХОББИ
+# ============================================================
+
+HOBBY_ALIASES = {
+    "бассейн": "плавание",
+    "плавание": "плавание",
+    "spa": "spa",
+    "спа": "spa",
+    "йога": "йога",
+    "прогулки": "прогулки"
+}
+
+
+def normalize_hobby(name: str) -> str:
+
+    name = name.lower().strip()
+
+    return HOBBY_ALIASES.get(name, name)
+
+
+# ============================================================
+# 8. АГЕНТ-АНАЛИТИК
 # ============================================================
 
 class AnalystAgent:
 
     def __init__(self, llm):
+
         self.llm = llm
         self.system = SystemMessage(content=SYSTEM_PROMPT)
 
@@ -240,6 +366,7 @@ class AnalystAgent:
             raise ValueError("Пустой запрос пользователя")
 
         # Защита от простых попыток промпт-инъекций
+
         suspicious = [
             "ignore previous",
             "забудь инструк",
@@ -248,9 +375,12 @@ class AnalystAgent:
         ]
 
         if any(p in user_text.lower() for p in suspicious):
-            raise ValueError("Обнаружена попытка инъекции")
+            raise ValueError(
+                "Обнаружена попытка инъекции"
+            )
 
-        # Вызов модели
+        # Вызов языковой модели
+
         response = self.llm.invoke([
             self.system,
             HumanMessage(content=user_text)
@@ -263,16 +393,19 @@ class AnalystAgent:
             print(raw_text)
 
         # Извлечение JSON
+
         try:
             data = extract_json_from_response(raw_text)
 
-        except (json.JSONDecodeError, ValueError) as e:
+        except ValueError as e:
             raise ValueError(
                 f"Модель вернула некорректный JSON:\n{raw_text}"
             ) from e
 
         # Pydantic-валидация
+
         try:
+
             profile = UserProfile.model_validate(data)
 
             if verbose:
@@ -283,6 +416,7 @@ class AnalystAgent:
         except ValidationError as e:
 
             if verbose:
+
                 print("\nОШИБКА ВАЛИДАЦИИ PYDANTIC")
 
                 print("\nJSON модели:")
@@ -295,6 +429,7 @@ class AnalystAgent:
                 print("\nКОНКРЕТНЫЕ ОШИБКИ:")
 
                 for error in e.errors():
+
                     print(f"Поле: {error['loc']}")
                     print(f"Ошибка: {error['msg']}")
                     print(f"Тип: {error['type']}")
@@ -303,8 +438,10 @@ class AnalystAgent:
             raise
 
     # Контракт с гидом
+
     @staticmethod
     def for_guide(p: UserProfile) -> list:
+
         return [
             {
                 "hobby": h.name,
@@ -315,8 +452,10 @@ class AnalystAgent:
         ]
 
     # Контракт с логистом
+
     @staticmethod
     def for_logist(p: UserProfile) -> dict:
+
         return {
             "fitness": p.fitness.value,
             "has_children": p.has_children,
@@ -327,38 +466,50 @@ class AnalystAgent:
         }
 
     # Контракт с бюджетным агентом
+
     @staticmethod
     def for_budget(p: UserProfile) -> dict:
+
         return {
             "budget_priority": p.budget_priority,
             "comfort_priority": p.comfort_priority
         }
 
     # Контракт с критиком
+
     @staticmethod
     def for_critic(p: UserProfile) -> dict:
+
         return p.model_dump(mode="json")
 
 
 # ============================================================
-# 8. МЕТРИКИ КАЧЕСТВА
+# 9. МЕТРИКИ КАЧЕСТВА
 # ============================================================
 
 def evaluate_analyst(agent, test_cases):
 
-    total = 0
+    total = len(test_cases)
+
     schema_ok = 0
     conflicts = 0
 
     correct = 0
     total_expected = 0
 
-    for case in test_cases:
+    for i, case in enumerate(test_cases, 1):
 
-        total += 1
+        # Ожидаемые хобби учитываются для каждого теста
+
+        expected = {
+            normalize_hobby(h)
+            for h in case.get("expected_hobbies", [])
+        }
+
+        total_expected += len(expected)
 
         try:
-            # verbose=False отключает повторный вывод
+
             profile = agent.analyze(
                 case["input"],
                 verbose=False
@@ -366,22 +517,25 @@ def evaluate_analyst(agent, test_cases):
 
             schema_ok += 1
 
-        except (ValidationError, ValueError):
+            got = {
+                normalize_hobby(h.name)
+                for h in profile.hobbies
+            }
+
+            matched = expected & got
+            correct += len(matched)
+
+            print(f"\nТест {i}: УСПЕШНО")
+            print("Ожидалось:", expected)
+            print("Распознано:", got)
+            print("Совпадения:", matched)
+
+        except Exception as e:
+
             conflicts += 1
-            continue
 
-        expected = set(
-            h.lower()
-            for h in case.get("expected_hobbies", [])
-        )
-
-        got = set(
-            h.name.lower()
-            for h in profile.hobbies
-        )
-
-        total_expected += len(expected)
-        correct += len(expected & got)
+            print(f"\nТест {i}: ОШИБКА")
+            print(type(e).__name__, str(e))
 
     return {
         "schema_adherence": schema_ok / max(total, 1),
@@ -391,7 +545,7 @@ def evaluate_analyst(agent, test_cases):
 
 
 # ============================================================
-# 9. ТЕСТОВЫЕ ДАННЫЕ
+# 10. ТЕСТОВЫЕ ДАННЫЕ
 # ============================================================
 
 TEST_CASES = [
@@ -403,8 +557,10 @@ TEST_CASES = [
 
         Не интересуют экскурсии с утра до вечера,
         экстремальные развлечения и длительные походы.
-        Хотелось бы посещать SPA, бассейн, заниматься йогой,
-        гулять по красивым местам и хорошо высыпаться.
+
+        Хотелось бы посещать SPA, бассейн,
+        заниматься йогой, гулять по красивым местам
+        и хорошо высыпаться.
 
         Желательно выбрать гостиницу с хорошим сервисом,
         бассейном, рестораном и возможностью заказать массаж.
@@ -416,6 +572,7 @@ TEST_CASES = [
         Бюджет не самый ограниченный, важнее качество
         проживания и возможность действительно отдохнуть.
         """,
+
         "expected_hobbies": [
             "SPA",
             "йога",
@@ -428,7 +585,7 @@ TEST_CASES = [
 
 
 # ============================================================
-# 10. ДЕМОНСТРАЦИЯ
+# 11. ДЕМОНСТРАЦИЯ
 # ============================================================
 
 agent = AnalystAgent(llm)
@@ -445,6 +602,7 @@ try:
     )
 
     print("\nИТОГОВЫЙ ПРОФИЛЬ:")
+
     print(
         profile.model_dump_json(
             indent=2,
@@ -468,7 +626,7 @@ except Exception as e:
 
 
 # ============================================================
-# 11. МЕТРИКИ КАЧЕСТВА
+# 12. МЕТРИКИ КАЧЕСТВА
 # ============================================================
 
 print("\n" + "=" * 60)
@@ -476,6 +634,8 @@ print("МЕТРИКИ КАЧЕСТВА")
 print("=" * 60)
 
 metrics = evaluate_analyst(agent, TEST_CASES)
+
+print("\nИТОГОВЫЕ ПОКАЗАТЕЛИ:")
 
 for name, value in metrics.items():
     print(f"{name}: {value:.2%}")
